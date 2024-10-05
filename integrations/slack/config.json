@@ -1,0 +1,4 @@
+{
+    "slack_token": "YOUR_SLACK_API_TOKEN",
+    "slack_channel": "YOUR_SLACK_CHANNEL_ID"
+}
