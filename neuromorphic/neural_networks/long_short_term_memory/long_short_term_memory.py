@@ -4,73 +4,110 @@ import torch.nn as nn
 import torch.optim as optim
 
 class LongShortTermMemory(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_size, hidden_size, output_size):
         super(LongShortTermMemory, self).__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
 
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=1, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=True)
 
     def forward(self, x):
-        h0 = torch.zeros(1, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(1, x.size(0), self.hidden_dim).to(x.device)
+        h0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
+        c0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
+
         out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
+        out = self.fc1(out[:, -1, :])
+        out = self.fc2(out)
         return out
 
-def train_lstm(model, device, loader, optimizer, criterion):
-    model.train()
-    total_loss = 0
-    for batch_idx, (data, target) in enumerate(loader):
-        data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
+class LSTMCell(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(LSTMCell, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        self.fc_i = nn.Linear(input_size, hidden_size)
+        self.fc_f = nn.Linear(input_size, hidden_size)
+        self.fc_g = nn.Linear(input_size, hidden_size)
+        self.fc_o = nn.Linear(input_size, hidden_size)
+
+    def forward(self, x, h, c):
+        i = torch.sigmoid(self.fc_i(x))
+        f = torch.sigmoid(self.fc_f(x))
+        g = torch.tanh(self.fc_g(x))
+        o = torch.sigmoid(self.fc_o(x))
+
+        c = f * c + i * g
+        h = o * torch.tanh(c)
+        return h, c
+
+class LSTMNetwork(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTMNetwork, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+
+        self.lstm_cell = LSTMCell(input_size, hidden_size)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        h = torch.zeros(x.size(0), self.hidden_size).to(x.device)
+        c = torch.zeros(x.size(0), self.hidden_size).to(x.device)
+
+        for i in range(x.size(1)):
+            h, c = self.lstm_cell(x[:, i, :], h, c)
+
+        out = self.fc(h)
+        return out
+
+class LongShortTermMemoryTrainer:
+    def __init__(self, model, optimizer, loss_fn):
+        self.model = model
+        self.optimizer = optimizer
+        self.loss_fn = loss_fn
+
+    def train(self, inputs, targets):
+        self.optimizer.zero_grad()
+        outputs = self.model(inputs)
+        loss = self.loss_fn(outputs, targets)
         loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(loader)
+        self.optimizer.step()
+        return loss.item()
 
-def test_lstm(model, device, loader):
-    model.eval()
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += nn.CrossEntropyLoss()(output, target).item()
-            pred = output.max(1, keepdim=True)[1]
-            correct += pred.eq(target.view_as(pred)).sum().item()
-    test_loss /= len(loader)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(loader.dataset),
-        100. * correct / len(loader.dataset)))
+    def test(self, inputs, targets):
+        outputs = self.model(inputs)
+        loss = self.loss_fn(outputs, targets)
+        return loss.item()
 
+# Example usage:
 if __name__ == "__main__":
-    # Set the seed for reproducibility
+    # Set random seed for reproducibility
     torch.manual_seed(0)
-    np.random.seed(0)
 
-    # Define the device (GPU or CPU)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # Define the long short-term memory model
+    model = LongShortTermMemory(input_size=784, hidden_size=256, output_size=10)
 
-    # Define the model, loss function, and optimizer
-    model = LongShortTermMemory(input_dim=784, hidden_dim=256 , output_dim=10)
-    criterion = nn.CrossEntropyLoss()
+    # Define the optimizer and loss function
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.CrossEntropyLoss()
 
-    # Define the data loader
-    from torchvision import datasets, transforms
-    transform = transforms.Compose([transforms.ToTensor()])
-    trainset = datasets.MNIST('~/.pytorch/MNIST_data/', download=True, train=True, transform=transform)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
-    testset = datasets.MNIST('~/.pytorch/MNIST_data/', download=True, train=False, transform=transform)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=64, shuffle=False)
+    # Define the trainer
+    trainer = LongShortTermMemoryTrainer(model, optimizer, loss_fn)
 
     # Train the model
+    inputs = torch.randn(100, 784)
+    targets = torch.randint(0, 10, (100,))
     for epoch in range(10):
-        train_lstm(model, device, trainloader, optimizer, criterion)
-        test_lstm(model, device, testloader)
+        loss = trainer.train(inputs, targets)
+        print(f"Epoch {epoch+1}, Loss: {loss:.4f}")
+
+    # Test the model
+    test_inputs = torch.randn(100, 784)
+    test_targets = torch.randint(0, 10, (100,))
+    test_loss = trainer.test(test_inputs, test_targets)
+    print(f"Test Loss: {test_loss:.4f}")
