@@ -3,94 +3,108 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-class SpikingNeuralNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+class Spiking NeuralNetwork(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
         super(SpikingNeuralNetwork, self).__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
 
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, output_size)
 
         self.spike_fn = nn.ReLU()
+        self.reset_fn = nn.ReLU()
 
     def forward(self, x):
         x = self.spike_fn(self.fc1(x))
-        x = self.fc2(x)
+        x = self.reset_fn(self.fc2(x))
         return x
 
-    def spike(self, x):
-        return self.spike_fn(x)
+    def reset(self):
+        self.fc1.reset_parameters()
+        self.fc2.reset_parameters()
 
-class SpikingNeuron(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(SpikingNeuron, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+class LIFNeuron(nn.Module):
+    def __init__(self, tau, v_th, v_reset):
+        super(LIFNeuron, self).__init__()
+        self.tau = tau
+        self.v_th = v_th
+        self.v_reset = v_reset
 
-        self.fc = nn.Linear(input_dim, output_dim)
-
-        self.spike_fn = nn.ReLU()
+        self.v = torch.zeros(1)
 
     def forward(self, x):
-        x = self.spike_fn(self.fc(x))
-        return x
+        dvdt = (self.v - self.v_reset) / self.tau + x
+        self.v = self.v + dvdt
+        spike = torch.where(self.v >= self.v_th, 1, 0)
+        self.v = torch.where(spike, self.v_reset, self.v)
+        return spike
 
-    def spike(self, x):
-        return self.spike_fn(x)
+class IzhikevichNeuron(nn.Module):
+    def __init__(self, a, b, c, d):
+        super(IzhikevichNeuron, self).__init__()
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
 
-def train_snn(model, device, loader, optimizer, criterion):
-    model.train()
-    total_loss = 0
-    for batch_idx, (data, target) in enumerate(loader):
-        data, target = data.to(device), target.to(device)
-        optimizer.zero_grad()
-        output = model(data)
-        loss = criterion(output, target)
+        self.v = torch.zeros(1)
+        self.u = torch.zeros(1)
+
+    def forward(self, x):
+        dvdt = 0.04 * self.v**2 + 5 * self.v + 140 - self.u + x
+        dudt = self.a * (self.b * self.v - self.u)
+        self.v = self.v + dvdt
+        self.u = self.u + dudt
+        spike = torch.where(self.v >= 30, 1, 0)
+        self.v = torch.where(spike, self.c, self.v)
+        self.u = torch.where(spike, self.u + self.d, self.u)
+        return spike
+
+class SpikingNeuralNetworkTrainer:
+    def __init__(self, model, optimizer, loss_fn):
+        self.model = model
+        self.optimizer = optimizer
+        self.loss_fn = loss_fn
+
+    def train(self, inputs, targets):
+        self.optimizer.zero_grad()
+        outputs = self.model(inputs)
+        loss = self.loss_fn(outputs, targets)
         loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-    return total_loss / len(loader)
+        self.optimizer.step()
+        return loss.item()
 
-def test_snn(model, device, loader):
-    model.eval()
-    test_loss = 0
-    correct = 0
-    with torch.no_grad():
-        for data, target in loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += nn.CrossEntropyLoss()(output, target).item()
-            pred = output.max(1, keepdim=True)[1]
-            correct += pred.eq(target.view_as(pred)).sum().item()
-    test_loss /= len(loader)
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(loader.dataset),
-        100. * correct / len(loader.dataset)))
+    def test(self, inputs, targets):
+        outputs = self.model(inputs)
+        loss = self.loss_fn(outputs, targets)
+        return loss.item()
 
+# Example usage:
 if __name__ == "__main__":
-    # Set the seed for reproducibility
+    # Set random seed for reproducibility
     torch.manual_seed(0)
-    np.random.seed(0)
 
-    # Define the device (GPU or CPU)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # Define the spiking neural network model
+    model = SpikingNeuralNetwork(input_size=784, hidden_size=256, output_size=10)
 
-    # Define the model, loss function, and optimizer
-    model = SpikingNeuralNetwork(input_dim=784, hidden_dim=256, output_dim=10)
-    criterion = nn.CrossEntropyLoss()
+    # Define the optimizer and loss function
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    loss_fn = nn.CrossEntropyLoss()
 
-    # Define the data loader
-    from torchvision import datasets, transforms
-    transform = transforms.Compose([transforms.ToTensor()])
-    trainset = datasets.MNIST('~/.pytorch/MNIST_data/', download=True, train=True, transform=transform)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True)
-    testset = datasets.MNIST('~/.pytorch/MNIST_data/', download=True, train=False, transform=transform)
-    testloader = torch.utils.data.DataLoader(testset, batch_size=64, shuffle=False)
+    # Define the trainer
+    trainer = SpikingNeuralNetworkTrainer(model, optimizer, loss_fn)
 
     # Train the model
+    inputs = torch.randn(100, 784)
+    targets = torch.randint(0, 10, (100,))
     for epoch in range(10):
-        train_snn(model, device, trainloader, optimizer, criterion)
-        test_snn(model, device, testloader)
+        loss = trainer.train(inputs, targets)
+        print(f"Epoch {epoch+1}, Loss: {loss:.4f}")
+
+    # Test the model
+    test_inputs = torch.randn(100, 784)
+    test_targets = torch.randint(0, 10, (100,))
+    test_loss = trainer.test(test_inputs, test_targets)
+    print(f"Test Loss: {test_loss:.4f}")
