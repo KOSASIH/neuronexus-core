@@ -1,2 +1,11 @@
-# Google App Engine generated folder
-appengine-generated/
+# Ignore files and directories
+
+*   .git
+*   .idea
+*   .vscode
+*   __pycache__
+*   *.pyc
+*   *.egg-info
+*   dist
+*   build
+*   docs/_build
